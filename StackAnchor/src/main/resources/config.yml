@@ -1,0 +1,43 @@
+# StackAnchor config
+#
+# tracked-entities: entity types this plugin will treat as "stacked" and manage.
+tracked-entities:
+  - SHEEP
+  - PIG
+  - COW
+  - CHICKEN
+
+# default-stack-size: used only when no external stacker plugin metadata is found
+# (see StackedMobListener#getStackAmount). Set to 1 to disable simulated stacking
+# entirely and rely purely on your real stacker plugin's data.
+default-stack-size: 16
+
+# min-hits-per-layer: no single hit (any weapon) can ever deal more than
+# (mob's max health / this number) damage, so it always takes at least this
+# many hits to bring one layer down - regardless of sword, axe, sharpness, etc.
+# Set to 1 to disable capping entirely (any weapon can one-shot a layer again).
+min-hits-per-layer: 3
+
+# metadata-key: if you run an external mob-stacking plugin, set this to whatever
+# metadata key it stores the stack count under, and StackAnchor will read/write
+# through it instead of using its own internal counter. Leave blank to use the
+# internal counter only.
+external-stack-metadata-key: ""
+
+# drops per single stack decrement (fatal hit that doesn't kill the last unit)
+# Format: "MATERIAL:min:max"
+drops:
+  SHEEP:
+    - "WOOL:1:1"
+    - "MUTTON:1:1"
+  PIG:
+    - "PORK:1:1"
+  COW:
+    - "RAW_BEEF:1:1"
+    - "LEATHER:1:0"
+  CHICKEN:
+    - "FEATHER:1:1"
+    - "RAW_CHICKEN:1:1"
+
+# Left empty because custom head drops are now securely handled inside the Java code.
+drop-commands: []
