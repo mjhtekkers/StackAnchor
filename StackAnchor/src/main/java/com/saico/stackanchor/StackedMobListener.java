@@ -5,6 +5,7 @@ import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.LivingEntity;
+import org.bukkit.entity.Pig;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -60,6 +61,11 @@ public class StackedMobListener implements Listener {
         entity.setNoDamageTicks(0);
 
         tryDisableAI(entity);
+
+        // Freeze pig look/target tracking so it doesn't rotate towards players
+        if (entity instanceof Pig) {
+            ((Pig) entity).setTarget(null);
+        }
 
         int amount = getStackAmount(entity);
         plugin.stackData.put(entity, amount);
@@ -125,6 +131,9 @@ public class StackedMobListener implements Listener {
                 mob.setFireTicks(0);
                 mob.setVelocity(new Vector(0, 0, 0));
                 mob.setNoDamageTicks(0);
+                if (mob instanceof Pig) {
+                    ((Pig) mob).setTarget(null);
+                }
             }
         });
     }
