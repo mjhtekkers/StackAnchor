@@ -196,13 +196,12 @@ public class StackedMobListener implements Listener {
         entity.setMetadata(externalMetaKey, new FixedMetadataValue(plugin, amount));
     }
 
-    private void spawnDrops(LivingEntity mob, Player killer) {
+private void spawnDrops(LivingEntity mob, Player killer) {
         Location loc = mob.getLocation();
         String typeName = mob.getType().name();
 
         List<String> entries = plugin.getConfig().getStringList("drops." + typeName);
         for (String entry : entries) {
-            // format: MATERIAL:MIN:MAX  (uniform random amount between MIN and MAX inclusive)
             String[] parts = entry.split(":");
             if (parts.length != 3) continue;
 
@@ -217,18 +216,16 @@ public class StackedMobListener implements Listener {
             mob.getWorld().dropItemNaturally(loc, new ItemStack(mat, amount));
         }
 
-        if (killer != null) {
-            List<String> commands = plugin.getConfig().getStringList("drop-commands");
-            for (String cmd : commands) {
-                String parsed = cmd
-                        .replace("{player}", killer.getName())
-                        .replace("{x}", String.valueOf(loc.getBlockX()))
-                        .replace("{y}", String.valueOf(loc.getBlockY()))
-                        .replace("{z}", String.valueOf(loc.getBlockZ()))
-                        .replace("{world}", loc.getWorld().getName())
-                        .replace("{type}", typeName);
-                Bukkit.dispatchCommand(Bukkit.getConsoleSender(), parsed);
-            }
+        // Drop custom heads based strictly on the mob type, eliminating unknown command errors
+        String worldName = loc.getWorld().getName();
+        int x = loc.getBlockX();
+        int y = loc.getBlockY();
+        int z = loc.getBlockZ();
+
+        if (typeName.equals("SHEEP")) {
+            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "serveritem drop sheephead 1 " + worldName + " " + x + " " + y + " " + z);
+        } else if (typeName.equals("PIG")) {
+            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "serveritem drop pighead 1 " + worldName + " " + x + " " + y + " " + z);
         }
     }
 
