@@ -75,6 +75,7 @@ public class StackedMobListener implements Listener {
         Integer stack = plugin.stackData.get(mob);
         if (stack == null) return;
 
+        // Zero hit-delay per swing so every hit registers instantly without invulnerability frames
         mob.setNoDamageTicks(0);
         mob.setMaximumNoDamageTicks(0);
     }
@@ -84,18 +85,32 @@ public class StackedMobListener implements Listener {
         LivingEntity mob = event.getEntity();
         if (!trackedTypes.contains(mob.getType())) return;
 
-        // CRITICAL: Always clear vanilla drops and exp immediately to prevent duplication
+        // 1. Wipe default vanilla drops completely to avoid native duplicate item injection
         event.getDrops().clear();
         event.setDroppedExp(0);
 
+        // 2. Strict anti-duplication lock: prevents Spigot from firing duplicate death packets 
+        // on the exact same tick, ensuring spawnDrops only triggers once per layer break.
+        if (mob.hasMetadata("StackAnchor_DropLock")) {
+            return;
+        }
+        mob.setMetadata("StackAnchor_DropLock", new FixedMetadataValue(plugin, true));
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            if (mob.isValid()) {
+                mob.removeMetadata("StackAnchor_DropLock", plugin);
+            }
+        });
+
         Integer stack = plugin.stackData.get(mob);
         if (stack == null || stack <= 1) {
+            // Last unit dying for real - clean up registry and drop 1 final layer of items
             plugin.stackData.remove(mob);
             Player killer = mob.getKiller();
             spawnDrops(mob, killer);
             return;
         }
 
+        // Intermediate layer: decrement stack count by 1, write metadata, drop EXACTLY 1 layer of loot
         int remaining = stack - 1;
         plugin.stackData.put(mob, remaining);
         writeExternalStackMeta(mob, remaining);
@@ -103,6 +118,7 @@ public class StackedMobListener implements Listener {
         Player killer = mob.getKiller();
         spawnDrops(mob, killer);
 
+        // Revive / reset the mob health back to full for the next stack unit on the next tick
         Bukkit.getScheduler().runTask(plugin, () -> {
             if (mob.isValid()) {
                 mob.setHealth(mob.getMaxHealth());
