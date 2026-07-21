@@ -1,0 +1,6 @@
+name: StackAnchor
+main: com.saico.stackanchor.StackAnchorPlugin
+version: 1.0.0
+description: Zero hit-delay, fake-death stack decrement, and anchoring for stacked mobs on 1.8.8.
+author: SaiCo
+load: POSTWORLD
