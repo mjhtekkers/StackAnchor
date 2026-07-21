@@ -3,6 +3,10 @@ package com.saico.stackanchor;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.Server;
+import org.bukkit.command.CommandSender;
+import org.bukkit.conversations.Conversation;
+import org.bukkit.conversations.ConversationAbandonedEvent;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
@@ -14,9 +18,14 @@ import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.metadata.FixedMetadataValue;
+import org.bukkit.permissions.Permission;
+import org.bukkit.permissions.PermissionAttachment;
+import org.bukkit.permissions.PermissionAttachmentInfo;
+import org.bukkit.plugin.Plugin;
 import org.bukkit.util.Vector;
 
 import java.lang.reflect.Method;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -63,6 +72,7 @@ public class StackedMobListener implements Listener {
 
         int amount = getStackAmount(entity);
         plugin.stackData.put(entity, amount);
+        entity.setMetadata("StackAnchor_Count", new FixedMetadataValue(plugin, amount));
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -74,55 +84,8 @@ public class StackedMobListener implements Listener {
         Integer stack = plugin.stackData.get(mob);
         if (stack == null) return;
 
-        // Sub-tick protection lock against rapid packet spam
-        if (mob.hasMetadata("StackAnchor_HitLock")) {
-            event.setCancelled(true);
-            return;
-        }
-        mob.setMetadata("StackAnchor_HitLock", new FixedMetadataValue(plugin, true));
-        Bukkit.getScheduler().runTask(plugin, () -> {
-            if (mob.isValid() && !mob.isDead()) {
-                mob.removeMetadata("StackAnchor_HitLock", plugin);
-            }
-        });
-
         mob.setNoDamageTicks(0);
         mob.setMaximumNoDamageTicks(0);
-
-        Player killer = (event.getDamager() instanceof Player) ? (Player) event.getDamager() : null;
-
-        double damage = event.getFinalDamage();
-        double currentHealth = mob.getHealth();
-
-        // If the hit does not deplete the current health layer, let vanilla handle normal damage tracking
-        if (damage < currentHealth) {
-            return;
-        }
-
-        // Fatal hit on the current layer reached. Prevent actual death animation.
-        event.setDamage(0);
-
-        int remaining = stack - 1;
-
-        if (remaining <= 0) {
-            plugin.stackData.remove(mob);
-            Bukkit.getScheduler().runTask(plugin, () -> {
-                if (!mob.isDead()) {
-                    mob.setHealth(0.0);
-                }
-            });
-            return;
-        }
-
-        plugin.stackData.put(mob, remaining);
-        writeExternalStackMeta(mob, remaining);
-
-        spawnDrops(mob, killer);
-
-        mob.setHealth(mob.getMaxHealth());
-        mob.setFireTicks(0);
-        mob.setVelocity(new Vector(0, 0, 0));
-        mob.setNoDamageTicks(0);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)
@@ -130,13 +93,32 @@ public class StackedMobListener implements Listener {
         LivingEntity mob = event.getEntity();
         if (!trackedTypes.contains(mob.getType())) return;
 
+        Integer stack = plugin.stackData.get(mob);
+        if (stack == null || stack <= 1) {
+            plugin.stackData.remove(mob);
+            Player killer = mob.getKiller();
+            spawnDrops(mob, killer);
+            return;
+        }
+
         event.getDrops().clear();
         event.setDroppedExp(0);
+
+        int remaining = stack - 1;
+        plugin.stackData.put(mob, remaining);
+        writeExternalStackMeta(mob, remaining);
 
         Player killer = mob.getKiller();
         spawnDrops(mob, killer);
 
-        plugin.stackData.remove(mob);
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            if (mob.isValid()) {
+                mob.setHealth(mob.getMaxHealth());
+                mob.setFireTicks(0);
+                mob.setVelocity(new Vector(0, 0, 0));
+                mob.setNoDamageTicks(0);
+            }
+        });
     }
 
     private void tryDisableAI(LivingEntity entity) {
@@ -193,25 +175,30 @@ public class StackedMobListener implements Listener {
         }
 
         if (commandToRun != null) {
-            org.bukkit.command.CommandSender silentSender = new org.bukkit.command.CommandSender() {
+            CommandSender silentSender = new CommandSender() {
                 @Override public void sendMessage(String message) {}
                 @Override public void sendMessage(String[] messages) {}
-                @Override public org.bukkit.Server getServer() { return Bukkit.getServer(); }
+                @Override public Server getServer() { return Bukkit.getServer(); }
                 @Override public String getName() { return "StackAnchorSilent"; }
                 @Override public boolean isOp() { return true; }
                 @Override public void setOp(boolean value) {}
                 @Override public void sendRawMessage(String message) {}
                 @Override public boolean isPermissionSet(String name) { return true; }
-                @Override public boolean isPermissionSet(org.bukkit.permissions.Permission perm) { return true; }
+                @Override public boolean isPermissionSet(Permission perm) { return true; }
                 @Override public boolean hasPermission(String name) { return true; }
-                @Override public boolean hasPermission(org.bukkit.permissions.Permission perm) { return true; }
-                @Override public org.bukkit.permissions.PermissionAttachment addAttachment(org.bukkit.plugin.Plugin plugin, String name, boolean value) { return null; }
-                @Override public org.bukkit.permissions.PermissionAttachment addAttachment(org.bukkit.plugin.Plugin plugin) { return null; }
-                @Override public org.bukkit.permissions.PermissionAttachment addAttachment(org.bukkit.plugin.Plugin plugin, String name, boolean value, int ticks) { return null; }
-                @Override public org.bukkit.permissions.PermissionAttachment addAttachment(org.bukkit.plugin.Plugin plugin, int ticks) { return null; }
-                @Override public void removeAttachment(org.bukkit.permissions.PermissionAttachment attachment) {}
+                @Override public boolean hasPermission(Permission perm) { return true; }
+                @Override public PermissionAttachment addAttachment(Plugin plugin, String name, boolean value) { return null; }
+                @Override public PermissionAttachment addAttachment(Plugin plugin) { return null; }
+                @Override public PermissionAttachment addAttachment(Plugin plugin, String name, boolean value, int ticks) { return null; }
+                @Override public PermissionAttachment addAttachment(Plugin plugin, int ticks) { return null; }
+                @Override public void removeAttachment(PermissionAttachment attachment) {}
                 @Override public void recalculatePermissions() {}
-                @Override public java.util.Set<org.bukkit.permissions.PermissionAttachmentInfo> getEffectivePermissions() { return java.util.Collections.emptySet(); }
+                @Override public Set<PermissionAttachmentInfo> getEffectivePermissions() { return Collections.emptySet(); }
+                @Override public boolean isConversing() { return false; }
+                @Override public void acceptConversationInput(String input) {}
+                @Override public boolean beginConversation(Conversation conversation) { return false; }
+                @Override public void abandonConversation(Conversation conversation) {}
+                @Override public void abandonConversation(Conversation conversation, ConversationAbandonedEvent details) {}
             };
             Bukkit.dispatchCommand(silentSender, commandToRun);
         }
