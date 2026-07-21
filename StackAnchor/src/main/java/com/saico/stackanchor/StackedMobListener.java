@@ -74,7 +74,7 @@ public class StackedMobListener implements Listener {
         Integer stack = plugin.stackData.get(mob);
         if (stack == null) return;
 
-        // Tick lock to prevent double-packet or rapid fire-aspect multi-triggering
+        // Sub-tick protection lock against rapid packet spam
         if (mob.hasMetadata("StackAnchor_HitLock")) {
             event.setCancelled(true);
             return;
@@ -89,19 +89,20 @@ public class StackedMobListener implements Listener {
         mob.setNoDamageTicks(0);
         mob.setMaximumNoDamageTicks(0);
 
-        double finalDamage = event.getFinalDamage();
+        Player killer = (event.getDamager() instanceof Player) ? (Player) event.getDamager() : null;
+
+        double damage = event.getFinalDamage();
         double currentHealth = mob.getHealth();
 
-        // If the hit does NOT kill the current individual unit, let vanilla handle it normally (normal health loss, NO drops)
-        if (finalDamage < currentHealth) {
+        // If the hit does not deplete the current health layer, let vanilla handle normal damage tracking
+        if (damage < currentHealth) {
             return;
         }
 
-        // Hit is fatal to the current unit layer
+        // Fatal hit on the current layer reached. Prevent actual death animation.
         event.setDamage(0);
 
         int remaining = stack - 1;
-        Player killer = (event.getDamager() instanceof Player) ? (Player) event.getDamager() : null;
 
         if (remaining <= 0) {
             plugin.stackData.remove(mob);
@@ -184,10 +185,35 @@ public class StackedMobListener implements Listener {
         int y = loc.getBlockY();
         int z = loc.getBlockZ();
 
+        String commandToRun = null;
         if (typeName.equals("SHEEP")) {
-            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "serveritem drop sheephead 1 " + worldName + " " + x + " " + y + " " + z);
+            commandToRun = "serveritem drop sheephead 1 " + worldName + " " + x + " " + y + " " + z;
         } else if (typeName.equals("PIG")) {
-            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "serveritem drop pighead 1 " + worldName + " " + x + " " + y + " " + z);
+            commandToRun = "serveritem drop pighead 1 " + worldName + " " + x + " " + y + " " + z;
+        }
+
+        if (commandToRun != null) {
+            org.bukkit.command.CommandSender silentSender = new org.bukkit.command.CommandSender() {
+                @Override public void sendMessage(String message) {}
+                @Override public void sendMessage(String[] messages) {}
+                @Override public org.bukkit.Server getServer() { return Bukkit.getServer(); }
+                @Override public String getName() { return "StackAnchorSilent"; }
+                @Override public boolean isOp() { return true; }
+                @Override public void setOp(boolean value) {}
+                @Override public void sendRawMessage(String message) {}
+                @Override public boolean isPermissionSet(String name) { return true; }
+                @Override public boolean isPermissionSet(org.bukkit.permissions.Permission perm) { return true; }
+                @Override public boolean hasPermission(String name) { return true; }
+                @Override public boolean hasPermission(org.bukkit.permissions.Permission perm) { return true; }
+                @Override public org.bukkit.permissions.PermissionAttachment addAttachment(org.bukkit.plugin.Plugin plugin, String name, boolean value) { return null; }
+                @Override public org.bukkit.permissions.PermissionAttachment addAttachment(org.bukkit.plugin.Plugin plugin) { return null; }
+                @Override public org.bukkit.permissions.PermissionAttachment addAttachment(org.bukkit.plugin.Plugin plugin, String name, boolean value, int ticks) { return null; }
+                @Override public org.bukkit.permissions.PermissionAttachment addAttachment(org.bukkit.plugin.Plugin plugin, int ticks) { return null; }
+                @Override public void removeAttachment(org.bukkit.permissions.PermissionAttachment attachment) {}
+                @Override public void recalculatePermissions() {}
+                @Override public java.util.Set<org.bukkit.permissions.PermissionAttachmentInfo> getEffectivePermissions() { return java.util.Collections.emptySet(); }
+            };
+            Bukkit.dispatchCommand(silentSender, commandToRun);
         }
     }
 
