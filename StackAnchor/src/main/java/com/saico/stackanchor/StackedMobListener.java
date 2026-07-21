@@ -84,6 +84,10 @@ public class StackedMobListener implements Listener {
         LivingEntity mob = event.getEntity();
         if (!trackedTypes.contains(mob.getType())) return;
 
+        // CRITICAL: Always clear vanilla drops and exp immediately to prevent duplication
+        event.getDrops().clear();
+        event.setDroppedExp(0);
+
         Integer stack = plugin.stackData.get(mob);
         if (stack == null || stack <= 1) {
             plugin.stackData.remove(mob);
@@ -91,9 +95,6 @@ public class StackedMobListener implements Listener {
             spawnDrops(mob, killer);
             return;
         }
-
-        event.getDrops().clear();
-        event.setDroppedExp(0);
 
         int remaining = stack - 1;
         plugin.stackData.put(mob, remaining);
