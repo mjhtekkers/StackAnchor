@@ -21,4 +21,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: StackAnchor-1.8.8
-          path: target/*.jar
+          path: StackAnchor/target/*.jar
