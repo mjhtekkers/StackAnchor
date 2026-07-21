@@ -19,18 +19,19 @@ default-stack-size: 16
 external-stack-metadata-key: ""
 
 # drops per single stack decrement (fatal hit that doesn't kill the last unit)
+# Format: "MATERIAL:min:max"
 drops:
   SHEEP:
     - "WOOL:1:1"
+    - "MUTTON:1:1"
   PIG:
     - "PORK:1:1"
   COW:
-    - "BEEF:1:1"
+    - "RAW_BEEF:1:1"
     - "LEATHER:1:0"
   CHICKEN:
     - "FEATHER:1:1"
     - "RAW_CHICKEN:1:1"
 
-# console commands run on each fake-kill decrement. Placeholders: {player} {x} {y} {z} {world} {type}
+# Left empty because custom head drops are now securely handled inside the Java code.
 drop-commands: []
-#  - "give {player} custom_head 1"
