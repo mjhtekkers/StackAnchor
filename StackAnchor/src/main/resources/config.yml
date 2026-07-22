@@ -17,6 +17,7 @@ default-stack-size: 16
 # many hits to bring one layer down - regardless of sword, axe, sharpness, etc.
 # Set to 1 to disable capping entirely (any weapon can one-shot a layer again).
 min-hits-per-layer: 3
+debug-damage-log: true
 
 # metadata-key: if you run an external mob-stacking plugin, set this to whatever
 # metadata key it stores the stack count under, and StackAnchor will read/write
