@@ -17,13 +17,15 @@ default-stack-size: 16
 # many hits to bring one layer down - regardless of sword, axe, sharpness, etc.
 # Set to 1 to disable capping entirely (any weapon can one-shot a layer again).
 min-hits-per-layer: 3
+
+# debug-damage-log: when true, prints a line to console for every layer decrement
+# (real kill count, before/after). Turn off once you've confirmed it's behaving.
 debug-damage-log: true
 
-# metadata-key: if you run an external mob-stacking plugin, set this to whatever
-# metadata key it stores the stack count under, and StackAnchor will read/write
-# through it instead of using its own internal counter. Leave blank to use the
-# internal counter only.
-external-stack-metadata-key: ""
+# metadata-key: MobStacker's real per-entity stack count. StackAnchor now reads AND
+# writes through this key using MobStacker's own plugin identity (so both plugins
+# see the same number), instead of using its own disconnected internal counter.
+external-stack-metadata-key: "quantity"
 
 # drops per single stack decrement (fatal hit that doesn't kill the last unit)
 # Format: "MATERIAL:min:max"
