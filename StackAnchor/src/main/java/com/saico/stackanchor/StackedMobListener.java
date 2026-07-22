@@ -31,12 +31,6 @@ public class StackedMobListener implements Listener {
     private final int minHitsPerLayer;
     private final boolean debugDamageLog;
 
-    // The real owning plugin of external-stack-metadata-key (e.g. MobStacker), resolved once
-    // at startup. If found, we write metadata using ITS identity, not ours - Bukkit's metadata
-    // store keys entries by owning plugin, so writing under our own identity would just sit
-    // alongside MobStacker's entry rather than replacing it, and MobStacker's own .get(0) reads
-    // would keep returning its stale value. Writing under its identity makes our updates visible
-    // to it (and to anything else reading that key) as if MobStacker itself had set them.
     private Plugin externalOwner;
 
     public StackedMobListener(StackAnchorPlugin plugin) {
@@ -59,17 +53,12 @@ public class StackedMobListener implements Listener {
             Plugin mobStacker = Bukkit.getPluginManager().getPlugin("MobStacker");
             if (mobStacker != null) {
                 this.externalOwner = mobStacker;
-                plugin.getLogger().info("StackAnchor: found MobStacker - will read/write '" + externalMetaKey
-                        + "' metadata using MobStacker's own plugin identity so both plugins stay in sync.");
+                plugin.getLogger().info("StackAnchor: found MobStacker - reading/writing '" + externalMetaKey
+                        + "' live using MobStacker's own plugin identity.");
             } else {
-                // Fall back to our own identity. This only actually helps if whatever plugin
-                // owns this key reads metadata from ALL registered owners rather than just its
-                // own - which most stacker plugins do not. If you're using a different stacker
-                // plugin, tell me its exact plugin name and I'll point this at it instead.
                 this.externalOwner = plugin;
-                plugin.getLogger().warning("StackAnchor: external-stack-metadata-key is set to '" + externalMetaKey
-                        + "' but no plugin named 'MobStacker' was found - falling back to StackAnchor's own "
-                        + "metadata identity, which the external plugin likely won't see.");
+                plugin.getLogger().warning("StackAnchor: no plugin named 'MobStacker' found - falling back to "
+                        + "StackAnchor's own metadata identity for '" + externalMetaKey + "'.");
             }
         }
     }
@@ -84,9 +73,13 @@ public class StackedMobListener implements Listener {
 
         plugin.tryDisableAI(entity);
 
-        int amount = getStackAmount(entity);
+        // This is just a "we are tracking this entity" marker and a fallback value for when
+        // there's no external metadata at all. It is NOT trusted as the live stack count -
+        // see getCurrentStack(). MobStacker merges mobs into bigger stacks shortly AFTER spawn
+        // (not synchronously during CreatureSpawnEvent), so whatever we read here is only ever
+        // the pre-merge baseline (usually 1) and goes stale within moments.
+        int amount = getStackAmountAtSpawn(entity);
         plugin.stackData.put(entity, amount);
-        entity.setMetadata("StackAnchor_Count", new FixedMetadataValue(plugin, amount));
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -95,8 +88,9 @@ public class StackedMobListener implements Listener {
         if (event.getEntity() instanceof Player) return;
 
         LivingEntity mob = (LivingEntity) event.getEntity();
-        Integer stack = plugin.stackData.get(mob);
-        if (stack == null) return;
+        if (!plugin.stackData.containsKey(mob)) return;
+
+        int stack = getCurrentStack(mob);
 
         if (minHitsPerLayer > 1) {
             double cap = mob.getMaxHealth() / minHitsPerLayer;
@@ -122,7 +116,7 @@ public class StackedMobListener implements Listener {
 
                 if (debugDamageLog) {
                     plugin.getLogger().info(String.format(
-                        "[StackAnchor DEBUG] %s LAYER DECREMENT via onDamage: %d -> %d (quantity metadata + name updated)",
+                        "[StackAnchor DEBUG] %s LAYER DECREMENT via onDamage (live read): %d -> %d",
                         mob.getType(), stack, remaining));
                 }
 
@@ -146,11 +140,6 @@ public class StackedMobListener implements Listener {
         LivingEntity mob = event.getEntity();
         if (!trackedTypes.contains(mob.getType())) return;
 
-        // By the time we get here for the TRUE final layer, our onDamage() writes above have
-        // already kept the "quantity" metadata in sync, so MobStacker's own death listener
-        // (which runs at NORMAL priority, before this HIGHEST handler) will have already read
-        // the correct final count and correctly declined to spawn a replacement.
-
         event.getDrops().clear();
         event.setDroppedExp(0);
 
@@ -164,13 +153,13 @@ public class StackedMobListener implements Listener {
             }
         });
 
-        Integer stack = plugin.stackData.get(mob);
-        if (stack == null || stack <= 1) {
+        int stack = getCurrentStack(mob);
+        if (stack <= 1) {
             plugin.stackData.remove(mob);
             Player killer = mob.getKiller();
             spawnDrops(mob, killer);
             if (debugDamageLog) {
-                plugin.getLogger().info("[StackAnchor DEBUG] " + mob.getType() + " TRUE final kill via onDeath (stack was " + stack + ")");
+                plugin.getLogger().info("[StackAnchor DEBUG] " + mob.getType() + " TRUE final kill via onDeath (live stack was " + stack + ")");
             }
             return;
         }
@@ -194,7 +183,20 @@ public class StackedMobListener implements Listener {
         });
     }
 
-    private int getStackAmount(LivingEntity entity) {
+    // Live source of truth: reads MobStacker's real current count every time it's called.
+    // Falls back to our own cached/default value only if there's no external metadata at all
+    // (i.e. no external stacker plugin managing this entity).
+    private int getCurrentStack(LivingEntity entity) {
+        if (!externalMetaKey.isEmpty() && entity.hasMetadata(externalMetaKey)) {
+            try {
+                return entity.getMetadata(externalMetaKey).get(0).asInt();
+            } catch (Exception ignored) {}
+        }
+        Integer cached = plugin.stackData.get(entity);
+        return cached != null ? cached : Math.max(1, defaultStackSize);
+    }
+
+    private int getStackAmountAtSpawn(LivingEntity entity) {
         if (!externalMetaKey.isEmpty() && entity.hasMetadata(externalMetaKey)) {
             try {
                 return entity.getMetadata(externalMetaKey).get(0).asInt();
@@ -208,11 +210,6 @@ public class StackedMobListener implements Listener {
         entity.setMetadata(externalMetaKey, new FixedMetadataValue(externalOwner, amount));
     }
 
-    // Mirrors the count in the mob's visible name on every intercepted kill, since MobStacker
-    // itself only renames a mob during its own real death->respawn cycle - which we're
-    // deliberately avoiding for every layer except the true last one. Format is a plain
-    // "Nx Pig" style; if this doesn't match what you're used to seeing from MobStacker, send me
-    // the exact format/colours you want and I'll match it precisely.
     private void updateDisplayName(LivingEntity entity, int amount) {
         if (amount <= 1) {
             entity.setCustomNameVisible(false);
