@@ -82,12 +82,53 @@ public class StackedMobListener implements Listener {
         // Zero hit-delay per swing so every hit registers instantly without invulnerability frames
         mob.setNoDamageTicks(0);
         mob.setMaximumNoDamageTicks(0);
+
+        // If this hit would bring health to 0 or below AND this isn't the final layer,
+        // intercept it here instead of letting a real EntityDeathEvent happen. Vanilla's
+        // death-flop animation plays the instant health hits 0, client-side, before any
+        // of our revival code runs - reviving the mob a tick later can't undo an
+        // animation that's already played. Spam-killing intermediate layers this way
+        // is what causes the repeated spin/twitch. Clamping health to stay above 0 for
+        // every non-final layer means vanilla's death code (and its animation) is never
+        // triggered at all except for the true last layer.
+        if (stack > 1) {
+            double healthAfter = mob.getHealth() - event.getFinalDamage();
+            if (healthAfter <= 0) {
+                double allowedDamage = Math.max(0, mob.getHealth() - 1.0);
+                event.setDamage(allowedDamage);
+
+                int remaining = stack - 1;
+                plugin.stackData.put(mob, remaining);
+                writeExternalStackMeta(mob, remaining);
+
+                Player killer = (event.getDamager() instanceof Player) ? (Player) event.getDamager() : null;
+                spawnDrops(mob, killer);
+
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (mob.isValid()) {
+                        mob.setHealth(mob.getMaxHealth());
+                        mob.setFireTicks(0);
+                        mob.setVelocity(new Vector(0, 0, 0));
+                        mob.setNoDamageTicks(0);
+                    }
+                });
+            }
+        }
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onDeath(EntityDeathEvent event) {
         LivingEntity mob = event.getEntity();
         if (!trackedTypes.contains(mob.getType())) return;
+
+        // NOTE: for damage dealt by another entity (sword hits, etc.), onDamage()
+        // above now intercepts intermediate layers before real death ever occurs,
+        // to avoid the vanilla death-flop animation replaying on every hit. So this
+        // method's "intermediate layer" branch below now mainly exists as a fallback
+        // for death causes onDamage() doesn't see - fire, fall damage, drowning,
+        // poison, etc. (plain EntityDamageEvent, not EntityDamageByEntityEvent).
+        // The true final-layer kill (stack <= 1) always comes through here regardless
+        // of cause, since we deliberately let that last death happen for real.
 
         // 1. Wipe default vanilla drops completely to avoid native duplicate item injection
         event.getDrops().clear();
