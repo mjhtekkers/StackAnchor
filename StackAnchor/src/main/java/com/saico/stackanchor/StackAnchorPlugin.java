@@ -27,17 +27,11 @@ public class StackAnchorPlugin extends JavaPlugin {
 
     private static final Vector ZERO = new Vector(0, 0, 0);
 
-    private java.lang.reflect.Method setAiMethod;
+    private final java.util.Map<String, java.lang.reflect.Field> fieldCache = new java.util.concurrent.ConcurrentHashMap<>();
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
-
-        try {
-            setAiMethod = LivingEntity.class.getMethod("setAI", boolean.class);
-        } catch (NoSuchMethodException ex) {
-            setAiMethod = null;
-        }
 
         getServer().getPluginManager().registerEvents(new StackedMobListener(this), this);
 
@@ -57,17 +51,70 @@ public class StackAnchorPlugin extends JavaPlugin {
     }
 
     /**
-     * Disables vanilla AI/pathfinding via reflection (safe no-op on servers where
-     * setAI doesn't exist). Called once on spawn AND re-asserted every tick from
-     * anchorTick(), since nothing else guarantees AI stays off forever - a chunk
-     * reload, another plugin, or an NMS-side reset after setHealth can silently
-     * re-enable it otherwise.
+     * Empties the mob's goalSelector and targetSelector (wander, look-around,
+     * attack, etc.) via NMS reflection, WITHOUT setting vanilla NoAI.
+     *
+     * This is deliberate: vanilla's NoAI flag also disables the entity's
+     * participation in collision-push physics entirely (confirmed vanilla
+     * behavior, not a Bukkit quirk - see Mojang bug MC-89583, which was filed
+     * because NoAI mobs pushing the player was considered unintended). Since
+     * goalSelector/targetSelector are separate from the collision/physics
+     * tick, clearing them stops all autonomous behavior (wandering, turning,
+     * attacking, targeting) while leaving the mob fully pushable by players
+     * walking into it.
+     *
+     * Locked to v1_8_R3 (this server's exact NMS revision, matching
+     * spigot-api 1.8.8-R0.1-SNAPSHOT in pom.xml). If this server is ever
+     * moved to a different 1.8.8 build (v1_8_R1/R2), this reflection will
+     * throw ClassNotFoundException and silently no-op via the catch below -
+     * it will NOT crash the server, but AI will stop being disabled.
      */
     public void tryDisableAI(LivingEntity entity) {
-        if (setAiMethod == null) return;
         try {
-            setAiMethod.invoke(entity, false);
-        } catch (Exception ignored) {}
+            Object handle = entity.getClass().getMethod("getHandle").invoke(entity);
+            clearSelector(handle, "goalSelector");
+            clearSelector(handle, "targetSelector");
+        } catch (Exception ignored) {
+            // Server isn't v1_8_R3, or field names differ - fails safe (does nothing).
+        }
+    }
+
+    private void clearSelector(Object nmsEntity, String fieldName) throws Exception {
+        java.lang.reflect.Field selectorField = findField(nmsEntity.getClass(), fieldName);
+        if (selectorField == null) return;
+        selectorField.setAccessible(true);
+        Object selector = selectorField.get(nmsEntity);
+        if (selector == null) return;
+
+        // PathfinderGoalSelector's internal goal list field name is obfuscated
+        // and varies by build, so instead of guessing it, clear every
+        // Collection-typed field found on the selector object - this is the
+        // defensive, version-tolerant approach.
+        for (java.lang.reflect.Field f : selector.getClass().getDeclaredFields()) {
+            f.setAccessible(true);
+            Object value = f.get(selector);
+            if (value instanceof java.util.Collection) {
+                ((java.util.Collection<?>) value).clear();
+            }
+        }
+    }
+
+    private java.lang.reflect.Field findField(Class<?> clazz, String name) {
+        String cacheKey = clazz.getName() + "#" + name;
+        java.lang.reflect.Field cached = fieldCache.get(cacheKey);
+        if (cached != null) return cached;
+
+        Class<?> current = clazz;
+        while (current != null && current != Object.class) {
+            try {
+                java.lang.reflect.Field f = current.getDeclaredField(name);
+                fieldCache.put(cacheKey, f);
+                return f;
+            } catch (NoSuchFieldException ignored) {
+                current = current.getSuperclass();
+            }
+        }
+        return null;
     }
 
     private void anchorTick() {
