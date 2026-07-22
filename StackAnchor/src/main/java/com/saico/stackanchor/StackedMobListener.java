@@ -1,6 +1,7 @@
 package com.saico.stackanchor;
 
 import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.entity.EntityType;
@@ -14,6 +15,7 @@ import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.metadata.FixedMetadataValue;
+import org.bukkit.plugin.Plugin;
 import org.bukkit.util.Vector;
 
 import java.util.HashSet;
@@ -28,6 +30,14 @@ public class StackedMobListener implements Listener {
     private final int defaultStackSize;
     private final int minHitsPerLayer;
     private final boolean debugDamageLog;
+
+    // The real owning plugin of external-stack-metadata-key (e.g. MobStacker), resolved once
+    // at startup. If found, we write metadata using ITS identity, not ours - Bukkit's metadata
+    // store keys entries by owning plugin, so writing under our own identity would just sit
+    // alongside MobStacker's entry rather than replacing it, and MobStacker's own .get(0) reads
+    // would keep returning its stale value. Writing under its identity makes our updates visible
+    // to it (and to anything else reading that key) as if MobStacker itself had set them.
+    private Plugin externalOwner;
 
     public StackedMobListener(StackAnchorPlugin plugin) {
         this.plugin = plugin;
@@ -44,6 +54,24 @@ public class StackedMobListener implements Listener {
         this.defaultStackSize = plugin.getConfig().getInt("default-stack-size", 1);
         this.minHitsPerLayer = Math.max(1, plugin.getConfig().getInt("min-hits-per-layer", 1));
         this.debugDamageLog = plugin.getConfig().getBoolean("debug-damage-log", false);
+
+        if (!externalMetaKey.isEmpty()) {
+            Plugin mobStacker = Bukkit.getPluginManager().getPlugin("MobStacker");
+            if (mobStacker != null) {
+                this.externalOwner = mobStacker;
+                plugin.getLogger().info("StackAnchor: found MobStacker - will read/write '" + externalMetaKey
+                        + "' metadata using MobStacker's own plugin identity so both plugins stay in sync.");
+            } else {
+                // Fall back to our own identity. This only actually helps if whatever plugin
+                // owns this key reads metadata from ALL registered owners rather than just its
+                // own - which most stacker plugins do not. If you're using a different stacker
+                // plugin, tell me its exact plugin name and I'll point this at it instead.
+                this.externalOwner = plugin;
+                plugin.getLogger().warning("StackAnchor: external-stack-metadata-key is set to '" + externalMetaKey
+                        + "' but no plugin named 'MobStacker' was found - falling back to StackAnchor's own "
+                        + "metadata identity, which the external plugin likely won't see.");
+            }
+        }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -70,41 +98,19 @@ public class StackedMobListener implements Listener {
         Integer stack = plugin.stackData.get(mob);
         if (stack == null) return;
 
-        double rawDamage = event.getDamage();
-        double maxHealth = mob.getMaxHealth();
-        double healthBefore = mob.getHealth();
-
-        // Cap damage per hit to a fraction of max health so no single swing - sword,
-        // axe, whatever - can one-shot a layer. This is deliberately weapon-agnostic:
-        // no tool-type checks, just a flat ceiling on the damage number itself, which
-        // avoids the old fragile sword-vs-shovel branching that broke before.
-        double cap = maxHealth / minHitsPerLayer;
-        if (minHitsPerLayer > 1 && event.getDamage() > cap) {
-            event.setDamage(cap);
+        if (minHitsPerLayer > 1) {
+            double cap = mob.getMaxHealth() / minHitsPerLayer;
+            if (event.getDamage() > cap) {
+                event.setDamage(cap);
+            }
         }
 
-        if (debugDamageLog) {
-            plugin.getLogger().info(String.format(
-                "[StackAnchor DEBUG] %s hit: rawDamage=%.2f maxHealth=%.2f cap=%.2f " +
-                "healthBefore=%.2f finalDamageAfterCap=%.2f stackRemaining=%d",
-                mob.getType(), rawDamage, maxHealth, cap, healthBefore, event.getFinalDamage(), stack
-            ));
-        }
-
-        // Zero hit-delay per swing so every hit registers instantly without invulnerability frames
         mob.setNoDamageTicks(0);
         mob.setMaximumNoDamageTicks(0);
 
-        // If this hit would bring health to 0 or below AND this isn't the final layer,
-        // intercept it here instead of letting a real EntityDeathEvent happen. Vanilla's
-        // death-flop animation plays the instant health hits 0, client-side, before any
-        // of our revival code runs - reviving the mob a tick later can't undo an
-        // animation that's already played. Spam-killing intermediate layers this way
-        // is what causes the repeated spin/twitch. Clamping health to stay above 0 for
-        // every non-final layer means vanilla's death code (and its animation) is never
-        // triggered at all except for the true last layer.
         if (stack > 1) {
             double healthAfter = mob.getHealth() - event.getFinalDamage();
+
             if (healthAfter <= 0) {
                 double allowedDamage = Math.max(0, mob.getHealth() - 1.0);
                 event.setDamage(allowedDamage);
@@ -112,12 +118,12 @@ public class StackedMobListener implements Listener {
                 int remaining = stack - 1;
                 plugin.stackData.put(mob, remaining);
                 writeExternalStackMeta(mob, remaining);
+                updateDisplayName(mob, remaining);
 
                 if (debugDamageLog) {
                     plugin.getLogger().info(String.format(
-                        "[StackAnchor DEBUG] LAYER DECREMENT fired: %s stack %d -> %d",
-                        mob.getType(), stack, remaining
-                    ));
+                        "[StackAnchor DEBUG] %s LAYER DECREMENT via onDamage: %d -> %d (quantity metadata + name updated)",
+                        mob.getType(), stack, remaining));
                 }
 
                 Player killer = (event.getDamager() instanceof Player) ? (Player) event.getDamager() : null;
@@ -140,21 +146,14 @@ public class StackedMobListener implements Listener {
         LivingEntity mob = event.getEntity();
         if (!trackedTypes.contains(mob.getType())) return;
 
-        // NOTE: for damage dealt by another entity (sword hits, etc.), onDamage()
-        // above now intercepts intermediate layers before real death ever occurs,
-        // to avoid the vanilla death-flop animation replaying on every hit. So this
-        // method's "intermediate layer" branch below now mainly exists as a fallback
-        // for death causes onDamage() doesn't see - fire, fall damage, drowning,
-        // poison, etc. (plain EntityDamageEvent, not EntityDamageByEntityEvent).
-        // The true final-layer kill (stack <= 1) always comes through here regardless
-        // of cause, since we deliberately let that last death happen for real.
+        // By the time we get here for the TRUE final layer, our onDamage() writes above have
+        // already kept the "quantity" metadata in sync, so MobStacker's own death listener
+        // (which runs at NORMAL priority, before this HIGHEST handler) will have already read
+        // the correct final count and correctly declined to spawn a replacement.
 
-        // 1. Wipe default vanilla drops completely to avoid native duplicate item injection
         event.getDrops().clear();
         event.setDroppedExp(0);
 
-        // 2. Strict anti-duplication lock: prevents Spigot from firing duplicate death packets
-        // on the exact same tick, ensuring spawnDrops only triggers once per layer break.
         if (mob.hasMetadata("StackAnchor_DropLock")) {
             return;
         }
@@ -167,35 +166,24 @@ public class StackedMobListener implements Listener {
 
         Integer stack = plugin.stackData.get(mob);
         if (stack == null || stack <= 1) {
-            // Last unit dying for real - clean up registry and drop 1 final layer of items
-            if (debugDamageLog) {
-                plugin.getLogger().info(String.format(
-                    "[StackAnchor DEBUG] onDeath FINAL kill fired: %s (stack was %s)",
-                    mob.getType(), stack
-                ));
-            }
             plugin.stackData.remove(mob);
             Player killer = mob.getKiller();
             spawnDrops(mob, killer);
+            if (debugDamageLog) {
+                plugin.getLogger().info("[StackAnchor DEBUG] " + mob.getType() + " TRUE final kill via onDeath (stack was " + stack + ")");
+            }
             return;
         }
 
-        // Intermediate layer: decrement stack count by 1, write metadata, drop EXACTLY 1 layer of loot
-        if (debugDamageLog) {
-            plugin.getLogger().info(String.format(
-                "[StackAnchor DEBUG] onDeath INTERMEDIATE kill fired (fallback path - " +
-                "onDamage's interception should normally catch this instead): %s stack=%d",
-                mob.getType(), stack
-            ));
-        }
+        // Fallback path for death causes onDamage() never sees (fire, fall, drowning, etc.)
         int remaining = stack - 1;
         plugin.stackData.put(mob, remaining);
         writeExternalStackMeta(mob, remaining);
+        updateDisplayName(mob, remaining);
 
         Player killer = mob.getKiller();
         spawnDrops(mob, killer);
 
-        // Revive / reset the mob health back to full for the next stack unit on the next tick
         Bukkit.getScheduler().runTask(plugin, () -> {
             if (mob.isValid()) {
                 mob.setHealth(mob.getMaxHealth());
@@ -216,8 +204,24 @@ public class StackedMobListener implements Listener {
     }
 
     private void writeExternalStackMeta(LivingEntity entity, int amount) {
-        if (externalMetaKey.isEmpty()) return;
-        entity.setMetadata(externalMetaKey, new FixedMetadataValue(plugin, amount));
+        if (externalMetaKey.isEmpty() || externalOwner == null) return;
+        entity.setMetadata(externalMetaKey, new FixedMetadataValue(externalOwner, amount));
+    }
+
+    // Mirrors the count in the mob's visible name on every intercepted kill, since MobStacker
+    // itself only renames a mob during its own real death->respawn cycle - which we're
+    // deliberately avoiding for every layer except the true last one. Format is a plain
+    // "Nx Pig" style; if this doesn't match what you're used to seeing from MobStacker, send me
+    // the exact format/colours you want and I'll match it precisely.
+    private void updateDisplayName(LivingEntity entity, int amount) {
+        if (amount <= 1) {
+            entity.setCustomNameVisible(false);
+            return;
+        }
+        String typeName = entity.getType().name();
+        String display = typeName.charAt(0) + typeName.substring(1).toLowerCase();
+        entity.setCustomName(ChatColor.YELLOW + String.valueOf(amount) + "x " + ChatColor.RESET + display);
+        entity.setCustomNameVisible(true);
     }
 
     private void spawnDrops(LivingEntity mob, Player killer) {
