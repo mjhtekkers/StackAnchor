@@ -27,6 +27,7 @@ public class StackedMobListener implements Listener {
     private final String externalMetaKey;
     private final int defaultStackSize;
     private final int minHitsPerLayer;
+    private final boolean debugDamageLog;
 
     public StackedMobListener(StackAnchorPlugin plugin) {
         this.plugin = plugin;
@@ -42,6 +43,7 @@ public class StackedMobListener implements Listener {
         this.externalMetaKey = plugin.getConfig().getString("external-stack-metadata-key", "");
         this.defaultStackSize = plugin.getConfig().getInt("default-stack-size", 1);
         this.minHitsPerLayer = Math.max(1, plugin.getConfig().getInt("min-hits-per-layer", 1));
+        this.debugDamageLog = plugin.getConfig().getBoolean("debug-damage-log", false);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -68,15 +70,25 @@ public class StackedMobListener implements Listener {
         Integer stack = plugin.stackData.get(mob);
         if (stack == null) return;
 
+        double rawDamage = event.getDamage();
+        double maxHealth = mob.getMaxHealth();
+        double healthBefore = mob.getHealth();
+
         // Cap damage per hit to a fraction of max health so no single swing - sword,
         // axe, whatever - can one-shot a layer. This is deliberately weapon-agnostic:
         // no tool-type checks, just a flat ceiling on the damage number itself, which
         // avoids the old fragile sword-vs-shovel branching that broke before.
-        if (minHitsPerLayer > 1) {
-            double cap = mob.getMaxHealth() / minHitsPerLayer;
-            if (event.getDamage() > cap) {
-                event.setDamage(cap);
-            }
+        double cap = maxHealth / minHitsPerLayer;
+        if (minHitsPerLayer > 1 && event.getDamage() > cap) {
+            event.setDamage(cap);
+        }
+
+        if (debugDamageLog) {
+            plugin.getLogger().info(String.format(
+                "[StackAnchor DEBUG] %s hit: rawDamage=%.2f maxHealth=%.2f cap=%.2f " +
+                "healthBefore=%.2f finalDamageAfterCap=%.2f stackRemaining=%d",
+                mob.getType(), rawDamage, maxHealth, cap, healthBefore, event.getFinalDamage(), stack
+            ));
         }
 
         // Zero hit-delay per swing so every hit registers instantly without invulnerability frames
@@ -100,6 +112,13 @@ public class StackedMobListener implements Listener {
                 int remaining = stack - 1;
                 plugin.stackData.put(mob, remaining);
                 writeExternalStackMeta(mob, remaining);
+
+                if (debugDamageLog) {
+                    plugin.getLogger().info(String.format(
+                        "[StackAnchor DEBUG] LAYER DECREMENT fired: %s stack %d -> %d",
+                        mob.getType(), stack, remaining
+                    ));
+                }
 
                 Player killer = (event.getDamager() instanceof Player) ? (Player) event.getDamager() : null;
                 spawnDrops(mob, killer);
@@ -149,6 +168,12 @@ public class StackedMobListener implements Listener {
         Integer stack = plugin.stackData.get(mob);
         if (stack == null || stack <= 1) {
             // Last unit dying for real - clean up registry and drop 1 final layer of items
+            if (debugDamageLog) {
+                plugin.getLogger().info(String.format(
+                    "[StackAnchor DEBUG] onDeath FINAL kill fired: %s (stack was %s)",
+                    mob.getType(), stack
+                ));
+            }
             plugin.stackData.remove(mob);
             Player killer = mob.getKiller();
             spawnDrops(mob, killer);
@@ -156,6 +181,13 @@ public class StackedMobListener implements Listener {
         }
 
         // Intermediate layer: decrement stack count by 1, write metadata, drop EXACTLY 1 layer of loot
+        if (debugDamageLog) {
+            plugin.getLogger().info(String.format(
+                "[StackAnchor DEBUG] onDeath INTERMEDIATE kill fired (fallback path - " +
+                "onDamage's interception should normally catch this instead): %s stack=%d",
+                mob.getType(), stack
+            ));
+        }
         int remaining = stack - 1;
         plugin.stackData.put(mob, remaining);
         writeExternalStackMeta(mob, remaining);
